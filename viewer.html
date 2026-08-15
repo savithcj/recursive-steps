@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run viewer — ontology-grounded executor</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2a323d;
+    --text:#e6edf3; --muted:#8b949e; --accent:#7c9cff; --accent2:#f0883e;
+    --ok:#3fb950; --err:#f85149; --reuse:#d2a8ff; --comp:#56d4dd;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 80px}
+  header h1{margin:0 0 4px;font-size:24px;letter-spacing:-.02em}
+  header p{margin:0 0 22px;color:var(--muted);font-size:14px}
+  header a{color:var(--accent)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  button{background:var(--accent);color:#0b0f16;border:0;border-radius:8px;padding:9px 18px;
+    font:inherit;font-weight:650;cursor:pointer}
+  button.ghost{background:transparent;color:var(--text);border:1px solid var(--line);font-weight:500}
+  .hint{color:var(--muted);font-size:13px;margin-left:auto}
+  .goal{margin:16px 0 0;font-size:15px}
+  .goal b{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;
+    letter-spacing:.08em;display:block;margin-bottom:3px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:18px 0}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stat b{display:block;font-size:24px;font-variant-numeric:tabular-nums;line-height:1.15}
+  .stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+    margin:26px 0 10px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;
+    letter-spacing:.06em;text-transform:uppercase;flex:0 0 auto}
+  .b-executed{background:rgba(63,185,80,.16);color:var(--ok)}
+  .b-composed{background:rgba(86,212,221,.16);color:var(--comp)}
+  .b-reused{background:rgba(210,168,255,.16);color:var(--reuse)}
+  .b-failed{background:rgba(248,81,73,.16);color:var(--err)}
+  .b-complete{background:rgba(63,185,80,.16);color:var(--ok)}
+  ul.tree,ul.tree ul{list-style:none;margin:0;padding:0}
+  ul.tree ul{margin-left:20px;border-left:1px solid var(--line);padding-left:16px}
+  ul.tree li{position:relative;margin:7px 0}
+  ul.tree ul>li::before{content:"";position:absolute;left:-16px;top:18px;width:12px;height:1px;
+    background:var(--line)}
+  .node{background:var(--panel);border:1px solid var(--line);border-left-width:3px;
+    border-radius:8px;padding:9px 12px}
+  .node.executed{border-left-color:var(--ok)} .node.composed{border-left-color:var(--comp)}
+  .node.reused{border-left-color:var(--reuse)} .node.failed{border-left-color:var(--err)}
+  .node .top{display:flex;gap:9px;align-items:center}
+  .node .nid{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+  .node .txt{flex:1 1 auto}
+  .io{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px}
+  .chip{border:1px solid var(--line);border-radius:20px;padding:2px 9px;color:var(--muted);
+    font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .chip.out{border-color:rgba(63,185,80,.45);color:#9be9a8}
+  .arrow{color:var(--muted);opacity:.6}
+  .exec{margin-top:5px;font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+  .exec .bad{color:var(--err)}
+  .viol{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.4);border-radius:8px;
+    padding:10px 12px;margin:7px 0;font-size:13.5px}
+  .viol code{color:var(--err)}
+  .warn{background:rgba(240,136,62,.07);border:1px solid rgba(240,136,62,.35)}
+  .warn code{color:var(--accent2)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px}
+  th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;
+    letter-spacing:.08em;font-weight:500;padding:6px 10px;border-bottom:1px solid var(--line)}
+  td{padding:6px 10px;border-bottom:1px solid var(--line)}
+  td.mono{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+  .empty{color:var(--muted);font-size:14px;padding:14px 0}
+  footer{margin-top:30px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);
+    padding-top:14px}
+  footer code{background:var(--panel2);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Run viewer</h1>
+    <p>Loads a <code>RUN.json</code> from the ontology-grounded executor and renders the tree, the
+       composition violations, and what the run contributed to the ontology. This page never
+       decomposes anything — the local system owns all execution.
+       <a href="./">← the step decomposer</a></p>
+  </header>
+
+  <div class="panel">
+    <div class="row">
+      <button id="pick">Load RUN.json</button>
+      <button id="demo" class="ghost">Load example run</button>
+      <button id="clear" class="ghost">Clear</button>
+      <input id="file" type="file" accept="application/json,.json" hidden>
+      <span class="hint">or drop a file anywhere on this page</span>
+    </div>
+    <div class="goal" id="goalLine" hidden><b>Goal</b><span id="goalText"></span></div>
+  </div>
+
+  <div id="body"></div>
+
+  <footer>
+    Produced by <code>python3 run.py --offline</code>. Statuses: <b>executed</b> ran as a leaf,
+    <b>composed</b> passed its composition checks, <b>reused</b> deduped to an earlier node,
+    <b>failed</b> did neither. Composition checks validate the <em>shape</em> of a run — a consumed
+    artifact with no producer, a type mismatch, two owners for one name. They do not check whether
+    a value is right.
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+
+const STAT_KEYS = [["nodes","nodes"],["executed","executed"],["composed","composed"],
+                   ["reused","reused"],["failed","failed"],["max_depth","max depth"],
+                   ["executions","executions"],["repairs","repairs"]];
+
+function renderRun(run){
+  const body = $("body");
+  body.innerHTML = "";
+  $("goalLine").hidden = false;
+  $("goalText").textContent = run.goal || "(no goal recorded)";
+
+  // headline
+  const head = el("div", "row");
+  head.style.margin = "18px 0 0";
+  head.append(el("span", "badge b-" + (run.status === "complete" ? "complete" : "failed"),
+                 run.status || "unknown"));
+  head.append(el("span", "chip", run.mode || "?"));
+  if (run.model) head.append(el("span", "chip", run.model));
+  if (run.run_id) head.append(el("span", "chip", run.run_id));
+  body.append(head);
+
+  // metrics
+  const stats = el("div", "stats");
+  const m = run.metrics || {};
+  for (const [k, label] of STAT_KEYS){
+    if (m[k] === undefined) continue;
+    const s = el("div", "stat");
+    s.append(el("b", null, String(m[k])), el("span", null, label));
+    stats.append(s);
+  }
+  const d = run.ontology_delta;
+  if (d){
+    for (const [v, label] of [[d.new, "new concepts"], [d.reused, "reused"],
+                              [(d.reuse_rate ?? 0).toFixed(2), "reuse rate"]]){
+      const s = el("div", "stat");
+      s.append(el("b", null, String(v)), el("span", null, label));
+      stats.append(s);
+    }
+  }
+  body.append(stats);
+
+  if (d && d.new === 0){
+    const note = el("div", "viol warn");
+    note.append(el("span", null,
+      "0 new concepts — the accumulated vocabulary already covered this goal. " +
+      "That is a success, not a shortfall: reuse rate 1.00."));
+    body.append(note);
+  }
+
+  // violations and warnings
+  const vs = run.violations || [], ws = run.warnings || [];
+  body.append(el("h2", null, "Composition checks"));
+  if (!vs.length && !ws.length){
+    body.append(el("div", "empty", "No violations. Every consumed artifact had a producer, "
+      + "types lined up, and no artifact had two owners."));
+  }
+  for (const v of vs.concat(ws)){
+    const isWarn = (run.warnings || []).includes(v);
+    const box = el("div", "viol" + (isWarn ? " warn" : ""));
+    const code = el("code", null, v.check);
+    box.append(code, el("span", null, "  " + (v.artifact || "?")));
+    box.append(el("div", "exec",
+      [v.parent && ("parent " + v.parent), v.child && ("child " + v.child),
+       v.expected && ("expected: " + v.expected), v.actual && ("actual: " + v.actual)]
+      .filter(Boolean).join("  ·  ")));
+    body.append(box);
+  }
+
+  // tree
+  body.append(el("h2", null, "Nodes"));
+  const byId = {};
+  (run.nodes || []).forEach(n => byId[n.id] = n);
+  const roots = (run.nodes || []).filter(n => !n.parent);
+  const ul = el("ul", "tree");
+  roots.forEach(r => ul.append(nodeLi(r, byId)));
+  body.append(ul);
+
+  // ontology
+  const ont = run.ontology;
+  if (ont && ont.concepts){
+    body.append(el("h2", null, "Ontology after this run"));
+    const t = el("table");
+    const thead = el("tr");
+    ["id", "class", "term", "seen", "definition"].forEach(h => thead.append(el("th", null, h)));
+    t.append(thead);
+    const isNew = new Set((d && d.new_concept_ids) || []);
+    for (const c of ont.concepts){
+      const tr = el("tr");
+      tr.append(el("td", "mono", c.id));
+      const cls = el("td");
+      cls.append(el("span", "badge b-" + (isNew.has(c.id) ? "executed" : "reused"), c.class));
+      tr.append(cls);
+      tr.append(el("td", null, c.term), el("td", "mono", String(c.seen_count ?? "")),
+                el("td", null, c.definition || ""));
+      t.append(tr);
+    }
+    body.append(t);
+
+    if (ont.relations && ont.relations.length){
+      const name = {};
+      ont.concepts.forEach(c => name[c.id] = c.term);
+      body.append(el("h2", null, "Relations"));
+      const rt = el("table");
+      const rh = el("tr");
+      ["subject", "predicate", "object"].forEach(h => rh.append(el("th", null, h)));
+      rt.append(rh);
+      for (const r of ont.relations){
+        const tr = el("tr");
+        tr.append(el("td", null, name[r.subject] || r.subject));
+        tr.append(el("td", "mono", r.predicate));
+        tr.append(el("td", null, name[r.object] || r.object));
+        rt.append(tr);
+      }
+      body.append(rt);
+    }
+  }
+}
+
+function nodeLi(n, byId){
+  const li = el("li");
+  const d = el("div", "node " + (n.status || ""));
+  const top = el("div", "top");
+  top.append(el("span", "nid", n.id));
+  top.append(el("span", "badge b-" + (n.status || ""), n.status || "?"));
+  top.append(el("span", "txt", n.instruction || ""));
+  d.append(top);
+
+  const io = el("div", "io");
+  (n.requires || []).forEach(r => io.append(el("span", "chip", r.name + " : " + r.type)));
+  if ((n.requires || []).length) io.append(el("span", "arrow", "→"));
+  (n.produces || []).forEach(p => io.append(el("span", "chip out", p.name + " : " + p.type)));
+  if (io.children.length) d.append(io);
+
+  (n.executions || []).forEach(e => {
+    const line = el("div", "exec" + (e.exit === 0 ? "" : ""));
+    const ok = e.exit === 0;
+    line.append(el("span", ok ? null : "bad",
+      "attempt " + e.attempt + " · exit " + e.exit + (e.wall_ms != null ? " · " + e.wall_ms + "ms" : "")
+      + (ok ? "" : "  " + (e.stderr || "").split("\n").filter(Boolean).pop())));
+    d.append(line);
+  });
+  if (n.reused_from) d.append(el("div", "exec", "reused from " + n.reused_from));
+  if (n.reason) d.append(el("div", "exec", "reason: " + n.reason));
+
+  li.append(d);
+  if ((n.children || []).length){
+    const ul = el("ul");
+    n.children.forEach(id => byId[id] && ul.append(nodeLi(byId[id], byId)));
+    li.append(ul);
+  }
+  return li;
+}
+
+function load(text){
+  try {
+    renderRun(JSON.parse(text));
+  } catch (e){
+    $("body").innerHTML = "";
+    const box = el("div", "viol");
+    box.append(el("code", null, "could not read that file"), el("span", null, "  " + e.message));
+    $("body").append(box);
+  }
+}
+
+$("pick").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (f) f.text().then(load);
+});
+$("clear").addEventListener("click", () => {
+  $("body").innerHTML = "";
+  $("goalLine").hidden = true;
+  $("file").value = "";
+});
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (f) f.text().then(load);
+});
+
+// A real run, produced by `python3 run.py --offline`. Code fields truncated for size.
+const EXAMPLE = {"run_id":"r1","goal":"From input.txt, produce the word count, the character count, and the five most common words, as three separate artifacts.","mode":"offline","model":null,"status":"complete","metrics":{"nodes":4,"executed":3,"composed":1,"reused":0,"failed":0,"max_depth":1,"executions":3,"repairs":0,"wall_ms":37},"ontology_delta":{"new":8,"reused":6,"reuse_rate":0.4286,"new_concept_ids":["c1","c2","c3","c4","c5","c6","c7","c8"]},"violations":[],"warnings":[],"nodes":[
+{"id":"n0","parent":null,"depth":0,"instruction":"From input.txt, produce the word count, the character count, and the five most common words, as three separate artifacts.","requires":[{"name":"input.txt","type":"text"}],"produces":[{"name":"words.json","type":"json"},{"name":"chars.json","type":"json"},{"name":"top5.json","type":"json"}],"status":"composed","code":null,"executions":[],"children":["n1","n2","n3"],"reused_from":null,"reason":null},
+{"id":"n1","parent":"n0","depth":1,"instruction":"produce words.json for: From input.txt, produce the word count, …","requires":[{"name":"input.txt","type":"text"}],"produces":[{"name":"words.json","type":"json"}],"status":"executed","code":"import json\ntext = open('artifacts/input.txt').read()\n…","executions":[{"attempt":1,"exit":0,"stderr":"","wall_ms":11}],"children":[],"reused_from":null,"reason":null},
+{"id":"n2","parent":"n0","depth":1,"instruction":"produce chars.json for: From input.txt, produce the character count, …","requires":[{"name":"input.txt","type":"text"}],"produces":[{"name":"chars.json","type":"json"}],"status":"executed","code":"import json\ntext = open('artifacts/input.txt').read()\n…","executions":[{"attempt":1,"exit":0,"stderr":"","wall_ms":12}],"children":[],"reused_from":null,"reason":null},
+{"id":"n3","parent":"n0","depth":1,"instruction":"produce top5.json for: From input.txt, produce the five most common words, …","requires":[{"name":"input.txt","type":"text"}],"produces":[{"name":"top5.json","type":"json"}],"status":"executed","code":"import json, collections\ntext = open('artifacts/input.txt').read()\n…","executions":[{"attempt":1,"exit":0,"stderr":"","wall_ms":13}],"children":[],"reused_from":null,"reason":null}],
+"ontology":{"concepts":[
+{"id":"c1","term":"from input txt produce the","class":"Action","definition":"The root task.","seen_count":1},
+{"id":"c2","term":"input","class":"Artifact","definition":"The source text.","seen_count":4},
+{"id":"c3","term":"words","class":"Artifact","definition":"The word count.","seen_count":2},
+{"id":"c4","term":"chars","class":"Artifact","definition":"The character count.","seen_count":2},
+{"id":"c5","term":"top5","class":"Artifact","definition":"The five most common words.","seen_count":2},
+{"id":"c6","term":"produce words json for from","class":"Action","definition":"Counts words.","seen_count":1},
+{"id":"c7","term":"produce chars json for from","class":"Action","definition":"Counts characters.","seen_count":1},
+{"id":"c8","term":"produce top5 json for from","class":"Action","definition":"Ranks word frequency.","seen_count":1}],
+"relations":[
+{"subject":"c1","predicate":"requires","object":"c2"},{"subject":"c1","predicate":"produces","object":"c3"},
+{"subject":"c1","predicate":"produces","object":"c4"},{"subject":"c1","predicate":"produces","object":"c5"},
+{"subject":"c6","predicate":"requires","object":"c2"},{"subject":"c6","predicate":"produces","object":"c3"},
+{"subject":"c7","predicate":"requires","object":"c2"},{"subject":"c7","predicate":"produces","object":"c4"},
+{"subject":"c8","predicate":"requires","object":"c2"},{"subject":"c8","predicate":"produces","object":"c5"}]}};
+
+$("demo").addEventListener("click", () => renderRun(EXAMPLE));
+window.renderRun = renderRun;   // exposed so the render path is testable without a file picker
+</script>
+</body>
+</html>
