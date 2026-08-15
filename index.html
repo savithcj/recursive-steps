@@ -51,7 +51,21 @@
     background:var(--line)}
   .node{display:flex;gap:9px;align-items:flex-start;background:var(--panel);
     border:1px solid var(--line);border-left-width:3px;border-radius:8px;padding:8px 12px;
-    animation:pop .28s ease}
+    animation:pop .28s ease;cursor:pointer;
+    transition:background .15s ease,border-color .15s ease}
+  .node:hover{background:var(--panel2);border-color:var(--accent)}
+  .node .tx{flex:1 1 auto}
+  .node .drill{flex:0 0 auto;font-size:11px;color:var(--accent);opacity:0;white-space:nowrap;
+    padding-top:2px;transition:opacity .15s ease}
+  .node:hover .drill{opacity:1}
+  .trail{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:18px 0 0}
+  .crumb{background:transparent;border:1px solid var(--line);color:var(--muted);
+    padding:4px 11px;border-radius:20px;font:inherit;font-size:12.5px;font-weight:500;
+    cursor:pointer;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .crumb:hover{color:var(--text);border-color:var(--accent)}
+  .crumb.current{color:var(--text);border-color:var(--accent);
+    background:rgba(124,156,255,.12);cursor:default}
+  .trail .sep{color:var(--muted);opacity:.55;font-size:13px}
   @keyframes pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
   .node .id{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);
     flex:0 0 auto;padding-top:1px}
@@ -75,7 +89,8 @@
   <header>
     <h1>Recursive Step Decomposer</h1>
     <p>Give it one goal. It splits the goal into steps, splits those steps into sub-steps, and keeps
-       going until the tree holds exactly <strong>100 leaf steps</strong>.</p>
+       going until the tree holds exactly <strong>100 leaf steps</strong>. Click any step to make
+       it the new goal and go deeper.</p>
   </header>
 
   <div class="panel">
@@ -103,6 +118,8 @@
       <span class="mode">mode <span id="modePill" class="pill demo">demo</span></span>
     </div>
   </div>
+
+  <nav class="trail" id="trail" aria-label="Goal history"></nav>
 
   <div class="stats">
     <div class="stat"><b id="mLeaves">1</b><span>leaf steps / <i id="target">100</i></span></div>
@@ -178,7 +195,7 @@ async function decompose(goal, expander, hooks = {}){
       on.onError(String(e && e.message || e));
     }
     const good = (texts || []).map(clean).filter(Boolean).slice(0, k);
-    if (good.length < k)                                              // no padding — §10
+    if (good.length < k)                                              // no padding — §11
       return { root, expansions, expansionOrder, childCounts, status: "error" };
 
     for (const t of good)                                             // §3.8
@@ -211,6 +228,18 @@ function demoExpander(node, k){
              (node.depth === 0 ? "" : " for " + node.id));
   return out;
 }
+
+/* Breadcrumb trail (SPEC §10). Pure: a trail is an array of goal strings, oldest first.
+   The last entry is always the current goal. */
+function pushCrumb(trail, text){                    // drilling into a card
+  if (trail.length && trail[trail.length - 1] === text) return trail.slice();
+  return trail.concat([text]);
+}
+function jumpCrumb(trail, index){                   // clicking an earlier crumb
+  if (index < 0 || index >= trail.length) return trail.slice();
+  return trail.slice(0, index + 1);
+}
+function resetCrumbs(goal){ return [goal]; }        // typing a fresh goal
 
 function buildResult(goal, mode, model, run){
   return {
@@ -303,8 +332,10 @@ function makeLiveExpander(apiKey, model){
 /* ---------------- UI ---------------- */
 const $ = id => document.getElementById(id);
 const els = { goal:$("goal"), key:$("key"), model:$("model"), run:$("run"), reset:$("reset"),
-  export:$("export"), pill:$("modePill"), tree:$("tree"), log:$("log"), bar:$("progress") };
+  export:$("export"), pill:$("modePill"), tree:$("tree"), log:$("log"), bar:$("progress"),
+  trail:$("trail") };
 let lastResult = null, busyId = null;
+let trail = resetCrumbs(els.goal.value.trim());
 
 els.key.value = localStorage.getItem("rsd_gemini_key") || "";
 let modelsLoadedFor = null;
@@ -371,8 +402,13 @@ function renderNode(n){
   const d = document.createElement("div");
   d.className = "node d" + Math.min(n.depth, 3) +
     (n.children.length === 0 ? " leaf" : "") + (n.id === busyId ? " busy" : "");
-  d.innerHTML = '<span class="id">' + n.id + '</span><span></span>';
-  d.lastChild.textContent = n.text;
+  const id = document.createElement("span"); id.className = "id"; id.textContent = n.id;
+  const tx = document.createElement("span"); tx.className = "tx"; tx.textContent = n.text;
+  const dr = document.createElement("span"); dr.className = "drill";
+  dr.textContent = "make this the goal →";
+  d.append(id, tx, dr);
+  d.title = "Click to make this the goal";
+  d.addEventListener("click", () => drillTo(n.text));
   li.appendChild(d);
   if (n.children.length){
     const ul = document.createElement("ul");
@@ -383,9 +419,53 @@ function renderNode(n){
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+/* ---------------- drill-down + breadcrumbs ---------------- */
+function clearRun(){
+  els.tree.innerHTML = ""; els.log.innerHTML = "";
+  lastResult = null; els.export.disabled = true;
+  $("mExp").textContent = "0";
+  stats(null); $("mLeaves").textContent = "1"; $("mNodes").textContent = "1";
+}
+function renderTrail(){
+  els.trail.innerHTML = "";
+  trail.forEach((t, i) => {
+    if (i){
+      const s = document.createElement("span");
+      s.className = "sep"; s.textContent = "›";
+      els.trail.appendChild(s);
+    }
+    const b = document.createElement("button");
+    b.className = "crumb" + (i === trail.length - 1 ? " current" : "");
+    b.textContent = t;
+    b.title = i === trail.length - 1 ? t : "Back to: " + t;
+    if (i < trail.length - 1) b.addEventListener("click", () => jumpTo(i));
+    els.trail.appendChild(b);
+  });
+}
+// A click never spends API calls — it only loads the goal. You press Decompose to run.
+function loadGoal(text, note){
+  els.goal.value = text;
+  renderTrail();
+  clearRun();
+  log("goal  " + text, "hi");
+  log(note);
+  els.goal.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+function drillTo(text){
+  trail = pushCrumb(trail, text);
+  loadGoal(text, "press Decompose to break this into " + TARGET_LEAVES + " steps");
+}
+function jumpTo(i){
+  trail = jumpCrumb(trail, i);
+  loadGoal(trail[trail.length - 1], "back " + (i === 0 ? "to the original goal" : "up the trail") +
+           " — press Decompose to run it again");
+}
+
 async function go(){
   const goal = els.goal.value.trim();
   if (!goal) return log("Enter a goal first.", "err");
+  // Typed a goal by hand rather than clicking a card? That starts a fresh trail.
+  if (goal !== trail[trail.length - 1]){ trail = resetCrumbs(goal); renderTrail(); }
   const key = els.key.value.trim(), mode = key ? "live" : "demo";
   if (mode === "live") await syncModels();
   const model = mode === "live" ? els.model.value : null;
@@ -434,9 +514,9 @@ async function go(){
 }
 els.run.addEventListener("click", go);
 els.reset.addEventListener("click", () => {
-  els.tree.innerHTML = ""; els.log.innerHTML = ""; lastResult = null;
-  $("mExp").textContent = "0"; stats(null); $("mLeaves").textContent = "1"; $("mNodes").textContent = "1";
-  els.export.disabled = true;
+  trail = resetCrumbs(els.goal.value.trim());
+  renderTrail();
+  clearRun();
 });
 els.export.addEventListener("click", () => {
   if (!lastResult) return;
@@ -446,6 +526,7 @@ els.export.addEventListener("click", () => {
   a.click(); URL.revokeObjectURL(a.href);
 });
 $("target").textContent = TARGET_LEAVES;   // keep the label honest if the constants change
+renderTrail();
 stats(null); $("mLeaves").textContent = "1"; $("mNodes").textContent = "1";
 </script>
 </body>
