@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recursive Step Decomposer</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2a323d;
+    --text:#e6edf3; --muted:#8b949e; --accent:#7c9cff; --accent2:#f0883e;
+    --ok:#3fb950; --err:#f85149;
+    --d0:#7c9cff; --d1:#56d4dd; --d2:#f0883e; --d3:#d2a8ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1040px;margin:0 auto;padding:28px 20px 80px}
+  header h1{margin:0 0 4px;font-size:24px;letter-spacing:-.02em}
+  header p{margin:0 0 22px;color:var(--muted);font-size:14px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .grid{display:grid;gap:10px;grid-template-columns:1fr 200px 190px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--muted);margin:0 0 5px}
+  input,select{width:100%;background:var(--panel2);color:var(--text);
+    border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;font-size:14px}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  .row{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+  button{background:var(--accent);color:#0b0f16;border:0;border-radius:8px;
+    padding:9px 18px;font:inherit;font-weight:650;cursor:pointer}
+  button.ghost{background:transparent;color:var(--text);border:1px solid var(--line);font-weight:500}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .mode{margin-left:auto;font-size:12px;color:var(--muted)}
+  .pill{display:inline-block;padding:3px 9px;border-radius:20px;font-weight:650;font-size:11px;
+    letter-spacing:.06em;text-transform:uppercase}
+  .pill.demo{background:rgba(240,136,62,.15);color:var(--accent2)}
+  .pill.live{background:rgba(63,185,80,.15);color:var(--ok)}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stat b{display:block;font-size:26px;font-variant-numeric:tabular-nums;line-height:1.1}
+  .stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .bar{height:5px;background:var(--panel2);border-radius:4px;overflow:hidden;margin-bottom:18px}
+  .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--d1));
+    transition:width .35s ease}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+    margin:24px 0 10px}
+  ul.tree,ul.tree ul{list-style:none;margin:0;padding:0}
+  ul.tree ul{margin-left:20px;border-left:1px solid var(--line);padding-left:16px}
+  ul.tree li{position:relative;margin:6px 0}
+  ul.tree ul>li::before{content:"";position:absolute;left:-16px;top:16px;width:12px;height:1px;
+    background:var(--line)}
+  .node{display:flex;gap:9px;align-items:flex-start;background:var(--panel);
+    border:1px solid var(--line);border-left-width:3px;border-radius:8px;padding:8px 12px;
+    animation:pop .28s ease}
+  @keyframes pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+  .node .id{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);
+    flex:0 0 auto;padding-top:1px}
+  .node.d0{border-left-color:var(--d0)} .node.d1{border-left-color:var(--d1)}
+  .node.d2{border-left-color:var(--d2)} .node.d3{border-left-color:var(--d3)}
+  .node.leaf .id::after{content:" •";color:var(--ok)}
+  .node.busy{border-left-color:var(--accent2);box-shadow:0 0 0 1px rgba(240,136,62,.35)}
+  #log{background:#0b0f14;border:1px solid var(--line);border-radius:10px;padding:12px;
+    max-height:200px;overflow:auto;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:var(--muted);white-space:pre-wrap}
+  #log .ok{color:var(--ok)} #log .err{color:var(--err)} #log .hi{color:var(--accent)}
+  footer{margin-top:28px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);
+    padding-top:14px}
+  footer code{background:var(--panel2);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Recursive Step Decomposer</h1>
+    <p>Give it one goal. It splits the goal into steps, splits those steps into sub-steps, and keeps
+       going until the tree holds exactly <strong>10 leaf steps</strong>.</p>
+  </header>
+
+  <div class="panel">
+    <div class="grid">
+      <div>
+        <label for="goal">Goal</label>
+        <input id="goal" value="Plan a surprise birthday party" placeholder="e.g. Ship a personal website">
+      </div>
+      <div>
+        <label for="key">Gemini API key <span style="text-transform:none;letter-spacing:0">(free — optional)</span></label>
+        <input id="key" type="password" placeholder="AIza… — blank = demo mode" autocomplete="off">
+      </div>
+      <div>
+        <label for="model">Model</label>
+        <select id="model">
+          <option value="gemini-flash-latest">gemini-flash-latest</option>
+          <option value="gemini-flash-lite-latest">gemini-flash-lite-latest</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <button id="run">Decompose</button>
+      <button id="reset" class="ghost">Reset</button>
+      <button id="export" class="ghost" disabled>Export RESULT.json</button>
+      <span class="mode">mode <span id="modePill" class="pill demo">demo</span></span>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><b id="mLeaves">1</b><span>leaf steps / 10</span></div>
+    <div class="stat"><b id="mNodes">1</b><span>nodes</span></div>
+    <div class="stat"><b id="mExp">0</b><span>expansions</span></div>
+    <div class="stat"><b id="mDepth">0</b><span>max depth</span></div>
+  </div>
+  <div class="bar"><i id="progress"></i></div>
+
+  <h2>Tree</h2>
+  <ul class="tree" id="tree"></ul>
+
+  <h2>Log</h2>
+  <div id="log"></div>
+
+  <footer>
+    Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener"
+    style="color:var(--accent)">aistudio.google.com/apikey</a> — no card required. Your key is kept
+    only in <em>your</em> browser's <code>localStorage</code> and sent only to
+    <code>generativelanguage.googleapis.com</code>. Leave it blank to run the offline deterministic
+    demo expander.
+  </footer>
+</div>
+
+<script>
+// ===ENGINE-START===  (pure logic — no DOM, extracted verbatim by verify.mjs)
+const TARGET_LEAVES = 10;
+const MAX_CHILDREN  = 3;
+const MAX_DEPTH     = 3;
+
+function bfsNodes(root){
+  const out = [], q = [root];
+  while (q.length){ const n = q.shift(); out.push(n); for (const c of n.children) q.push(c); }
+  return out;
+}
+function bfsLeaves(root){ return bfsNodes(root).filter(n => n.children.length === 0); }
+function maxDepth(root){ return bfsNodes(root).reduce((m,n) => Math.max(m, n.depth), 0); }
+function ancestorPath(root, target){
+  const path = [];
+  (function walk(n, trail){
+    const t = trail.concat([n]);
+    if (n === target){ path.push(...t); return true; }
+    return n.children.some(c => walk(c, t));
+  })(root, []);
+  return path.map(n => n.text);
+}
+
+// The algorithm of SPEC.md §3. `expander(target, k, root)` returns exactly k strings.
+async function decompose(goal, expander, hooks = {}){
+  const on = Object.assign({ onExpand(){}, onChildren(){}, onError(){} }, hooks);
+  const root = { id: "n0", text: goal, depth: 0, children: [] };
+  let idCounter = 1, expansions = 0;
+  const expansionOrder = [], childCounts = [];
+
+  while (true){
+    const leaves = bfsLeaves(root);                                   // §3.2
+    if (leaves.length >= TARGET_LEAVES)                               // §3.3
+      return { root, expansions, expansionOrder, childCounts, status: "complete" };
+    const target = leaves.find(n => n.depth < MAX_DEPTH);              // §3.4
+    if (!target)                                                      // §3.5
+      return { root, expansions, expansionOrder, childCounts, status: "stalled" };
+    const k = Math.min(MAX_CHILDREN, TARGET_LEAVES - leaves.length + 1); // §3.6
+
+    on.onExpand(target, k, root);
+    let texts;
+    try {
+      texts = await expander(target, k, root);                        // §3.7
+      if (!Array.isArray(texts) || texts.filter(clean).length < k){
+        texts = await expander(target, k, root);                      // one retry
+      }
+    } catch (e){
+      texts = null;
+      on.onError(String(e && e.message || e));
+    }
+    const good = (texts || []).map(clean).filter(Boolean).slice(0, k);
+    if (good.length < k)                                              // no padding — §10
+      return { root, expansions, expansionOrder, childCounts, status: "error" };
+
+    for (const t of good)                                             // §3.8
+      target.children.push({ id: "n" + (idCounter++), text: t, depth: target.depth + 1, children: [] });
+
+    expansions++;                                                     // §3.9
+    expansionOrder.push(target.id);
+    childCounts.push(good.length);
+    on.onChildren(target, root);
+  }
+}
+function clean(s){ return typeof s === "string" ? s.trim() : ""; }
+
+// Deterministic offline expander — same goal in, same tree out. No randomness, no clock.
+const DEMO_VERBS = ["Define", "Gather", "Confirm", "Draft", "Assign an owner for",
+  "Set a deadline for", "Review", "Line up"];
+const DEMO_NOUNS = ["the scope", "the budget", "the timeline", "the people involved",
+  "the materials", "the known risks", "a first version", "the final check"];
+function hashString(s){
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return Math.abs(h);
+}
+function demoExpander(node, k){
+  const seed = hashString(node.id + "|" + node.text);
+  const out = [];
+  for (let i = 0; i < k; i++)
+    out.push(DEMO_VERBS[(seed + i * 3) % DEMO_VERBS.length] + " " +
+             DEMO_NOUNS[(seed + i * 5) % DEMO_NOUNS.length] +
+             (node.depth === 0 ? "" : " for " + node.id));
+  return out;
+}
+
+function buildResult(goal, mode, model, run){
+  return {
+    goal, mode, model,
+    status: run.status,
+    metrics: {
+      nodes: bfsNodes(run.root).length,
+      leaves: bfsLeaves(run.root).length,
+      expansions: run.expansions,
+      maxDepth: maxDepth(run.root)
+    },
+    expansionOrder: run.expansionOrder,
+    childCounts: run.childCounts,
+    leafSteps: bfsLeaves(run.root).map(n => n.text),
+    tree: run.root
+  };
+}
+// ===ENGINE-END===
+
+/* ---------------- Live Gemini expander (SPEC §6) ---------------- */
+const GEMINI = "https://generativelanguage.googleapis.com/v1beta";
+const SYSTEM = "You break goals down into concrete, imperative sub-steps. " +
+  "You reply with a JSON array of strings and nothing else.";
+
+async function callGemini(apiKey, model, userPrompt){
+  const res = await fetch(GEMINI + "/models/" + encodeURIComponent(model) + ":generateContent", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: SYSTEM }] },
+      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+      generationConfig: {
+        maxOutputTokens: 4096,
+        responseMimeType: "application/json",
+        responseSchema: { type: "ARRAY", items: { type: "STRING" } }
+      }
+    })
+  });
+  if (!res.ok) throw new Error("API " + res.status + ": " + (await res.text()).slice(0, 300));
+  const data = await res.json();
+  const cand = (data.candidates || [])[0];
+  if (!cand) throw new Error("no candidate returned: " + JSON.stringify(data).slice(0, 300));
+  return ((cand.content && cand.content.parts) || []).map(p => p.text || "").join("");
+}
+
+// Model IDs change; ask the key which ones it can actually use rather than hardcoding.
+async function loadModels(apiKey){
+  const res = await fetch(GEMINI + "/models?pageSize=200",
+    { headers: { "x-goog-api-key": apiKey } });
+  if (!res.ok) throw new Error("models " + res.status + ": " + (await res.text()).slice(0, 200));
+  const data = await res.json();
+  return (data.models || [])
+    .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+    .map(m => m.name.replace(/^models\//, ""))
+    .filter(id => !/embedding|aqa|imagen|veo|tts|image|native-audio|live/i.test(id))
+    .sort();
+}
+function parseArray(text){
+  const a = text.indexOf("["), b = text.lastIndexOf("]");
+  if (a === -1 || b <= a) return null;
+  try { const v = JSON.parse(text.slice(a, b + 1)); return Array.isArray(v) ? v.map(String) : null; }
+  catch { return null; }
+}
+function makeLiveExpander(apiKey, model){
+  return async (node, k, root) => {
+    const path = ancestorPath(root, node);
+    const prompt =
+      "Overall goal: " + root.text + "\n" +
+      "Path from the goal to the step you are breaking down:\n" +
+      path.map((t, i) => "  " + "  ".repeat(i) + (i + 1) + ". " + t).join("\n") + "\n\n" +
+      "Break down ONLY the last item: \"" + node.text + "\"\n" +
+      "Return exactly " + k + " short imperative sub-steps that together accomplish it.\n" +
+      "Each under 12 words. Do not repeat the parent. Reply with only a JSON array of " + k + " strings.";
+    return parseArray(await callGemini(apiKey, model, prompt)) || [];
+  };
+}
+
+/* ---------------- UI ---------------- */
+const $ = id => document.getElementById(id);
+const els = { goal:$("goal"), key:$("key"), model:$("model"), run:$("run"), reset:$("reset"),
+  export:$("export"), pill:$("modePill"), tree:$("tree"), log:$("log"), bar:$("progress") };
+let lastResult = null, busyId = null;
+
+els.key.value = localStorage.getItem("rsd_gemini_key") || "";
+let modelsLoadedFor = null;
+els.key.addEventListener("input", () => {
+  localStorage.setItem("rsd_gemini_key", els.key.value.trim());
+  refreshMode();
+});
+els.key.addEventListener("change", syncModels);
+function refreshMode(){
+  const live = els.key.value.trim().length > 0;
+  els.pill.textContent = live ? "live" : "demo";
+  els.pill.className = "pill " + (live ? "live" : "demo");
+}
+// Model IDs get renamed and retired; ask the key what it can run instead of trusting a hardcoded list.
+async function syncModels(){
+  const key = els.key.value.trim();
+  if (!key || key === modelsLoadedFor) return;
+  modelsLoadedFor = key;
+  try {
+    const ids = await loadModels(key);
+    if (!ids.length) return;
+    const prev = els.model.value;
+    els.model.innerHTML = "";
+    for (const id of ids){
+      const o = document.createElement("option");
+      o.value = o.textContent = id;
+      els.model.appendChild(o);
+    }
+    const pick = ids.includes(prev) ? prev
+      : (ids.find(i => /flash/.test(i) && /latest/.test(i) && !/lite/.test(i))
+      || ids.find(i => /flash/.test(i) && !/lite/.test(i))
+      || ids.find(i => /flash/.test(i)) || ids[0]);
+    els.model.value = pick;
+    log("models  " + ids.length + " available · using " + pick, "ok");
+  } catch (e){
+    modelsLoadedFor = null;
+    log("models  could not list models (" + e.message + ") — keeping the default", "err");
+  }
+}
+refreshMode();
+syncModels();
+
+function log(msg, cls){
+  const s = document.createElement("span");
+  if (cls) s.className = cls;
+  s.textContent = msg + "\n";
+  els.log.appendChild(s);
+  els.log.scrollTop = els.log.scrollHeight;
+}
+function stats(root){
+  const nodes = root ? bfsNodes(root).length : 0, leaves = root ? bfsLeaves(root).length : 0;
+  $("mNodes").textContent = nodes;
+  $("mLeaves").textContent = leaves;
+  $("mDepth").textContent = root ? maxDepth(root) : 0;
+  els.bar.style.width = Math.min(100, (leaves / TARGET_LEAVES) * 100) + "%";
+}
+function render(root){
+  els.tree.innerHTML = "";
+  if (root) els.tree.appendChild(renderNode(root));
+  stats(root);
+}
+function renderNode(n){
+  const li = document.createElement("li");
+  const d = document.createElement("div");
+  d.className = "node d" + Math.min(n.depth, 3) +
+    (n.children.length === 0 ? " leaf" : "") + (n.id === busyId ? " busy" : "");
+  d.innerHTML = '<span class="id">' + n.id + '</span><span></span>';
+  d.lastChild.textContent = n.text;
+  li.appendChild(d);
+  if (n.children.length){
+    const ul = document.createElement("ul");
+    n.children.forEach(c => ul.appendChild(renderNode(c)));
+    li.appendChild(ul);
+  }
+  return li;
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function go(){
+  const goal = els.goal.value.trim();
+  if (!goal) return log("Enter a goal first.", "err");
+  const key = els.key.value.trim(), mode = key ? "live" : "demo";
+  if (mode === "live") await syncModels();
+  const model = mode === "live" ? els.model.value : null;
+
+  els.run.disabled = true; els.export.disabled = true;
+  els.log.innerHTML = ""; els.tree.innerHTML = ""; $("mExp").textContent = "0";
+  log("goal  " + goal, "hi");
+  log("mode  " + mode + (model ? "  (" + model + ")" : "  (offline, deterministic)"));
+
+  const base = mode === "live" ? makeLiveExpander(key, model) : demoExpander;
+  const expander = async (n, k, r) => {
+    if (mode === "demo") await sleep(320);            // pacing so the growth is watchable
+    return base(n, k, r);
+  };
+
+  const run = await decompose(goal, expander, {
+    onExpand(target, k, root){
+      busyId = target.id;
+      log("expand " + target.id + " (depth " + target.depth + ") → " + k + " children …");
+      render(root);
+    },
+    onChildren(target, root){
+      busyId = null;
+      $("mExp").textContent = String(Number($("mExp").textContent) + 1);
+      log("   ✓ " + target.children.map(c => c.id).join(", "), "ok");
+      render(root);
+    },
+    onError(msg){ log("   ✗ " + msg, "err"); }
+  });
+
+  busyId = null;
+  render(run.root);
+  lastResult = buildResult(goal, mode, model, run);
+  const m = lastResult.metrics;
+  log("");
+  log(run.status === "complete"
+      ? "done  " + m.nodes + " nodes · " + m.leaves + " leaves · " + m.expansions +
+        " expansions · depth " + m.maxDepth
+      : "stopped (" + run.status + ")  " + m.nodes + " nodes · " + m.leaves + " leaves",
+      run.status === "complete" ? "ok" : "err");
+  els.run.disabled = false; els.export.disabled = false;
+}
+els.run.addEventListener("click", go);
+els.reset.addEventListener("click", () => {
+  els.tree.innerHTML = ""; els.log.innerHTML = ""; lastResult = null;
+  $("mExp").textContent = "0"; stats(null); $("mLeaves").textContent = "1"; $("mNodes").textContent = "1";
+  els.export.disabled = true;
+});
+els.export.addEventListener("click", () => {
+  if (!lastResult) return;
+  const blob = new Blob([JSON.stringify(lastResult, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "RESULT.json";
+  a.click(); URL.revokeObjectURL(a.href);
+});
+stats(null); $("mLeaves").textContent = "1"; $("mNodes").textContent = "1";
+</script>
+</body>
+</html>
