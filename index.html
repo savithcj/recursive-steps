@@ -63,6 +63,8 @@
     max-height:200px;overflow:auto;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
     color:var(--muted);white-space:pre-wrap}
   #log .ok{color:var(--ok)} #log .err{color:var(--err)} #log .hi{color:var(--accent)}
+  #log .warn{color:var(--accent2)}
+  #target{font-style:normal}
   footer{margin-top:28px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);
     padding-top:14px}
   footer code{background:var(--panel2);padding:1px 5px;border-radius:4px}
@@ -73,7 +75,7 @@
   <header>
     <h1>Recursive Step Decomposer</h1>
     <p>Give it one goal. It splits the goal into steps, splits those steps into sub-steps, and keeps
-       going until the tree holds exactly <strong>10 leaf steps</strong>.</p>
+       going until the tree holds exactly <strong>100 leaf steps</strong>.</p>
   </header>
 
   <div class="panel">
@@ -103,7 +105,7 @@
   </div>
 
   <div class="stats">
-    <div class="stat"><b id="mLeaves">1</b><span>leaf steps / 10</span></div>
+    <div class="stat"><b id="mLeaves">1</b><span>leaf steps / <i id="target">100</i></span></div>
     <div class="stat"><b id="mNodes">1</b><span>nodes</span></div>
     <div class="stat"><b id="mExp">0</b><span>expansions</span></div>
     <div class="stat"><b id="mDepth">0</b><span>max depth</span></div>
@@ -127,8 +129,8 @@
 
 <script>
 // ===ENGINE-START===  (pure logic — no DOM, extracted verbatim by verify.mjs)
-const TARGET_LEAVES = 10;
-const MAX_CHILDREN  = 3;
+const TARGET_LEAVES = 100;
+const MAX_CHILDREN  = 5;
 const MAX_DEPTH     = 3;
 
 function bfsNodes(root){
@@ -233,25 +235,37 @@ const GEMINI = "https://generativelanguage.googleapis.com/v1beta";
 const SYSTEM = "You break goals down into concrete, imperative sub-steps. " +
   "You reply with a JSON array of strings and nothing else.";
 
+// A 100-leaf run is 25 requests. The Gemini free tier allows roughly 10 per minute, so 429s are
+// expected rather than exceptional — back off and retry instead of failing the whole run.
+const RATE_LIMIT_BACKOFF = [8, 16, 30, 45];   // seconds
+
 async function callGemini(apiKey, model, userPrompt){
-  const res = await fetch(GEMINI + "/models/" + encodeURIComponent(model) + ":generateContent", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM }] },
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      generationConfig: {
-        maxOutputTokens: 4096,
-        responseMimeType: "application/json",
-        responseSchema: { type: "ARRAY", items: { type: "STRING" } }
-      }
-    })
-  });
-  if (!res.ok) throw new Error("API " + res.status + ": " + (await res.text()).slice(0, 300));
-  const data = await res.json();
-  const cand = (data.candidates || [])[0];
-  if (!cand) throw new Error("no candidate returned: " + JSON.stringify(data).slice(0, 300));
-  return ((cand.content && cand.content.parts) || []).map(p => p.text || "").join("");
+  for (let attempt = 0; ; attempt++){
+    const res = await fetch(GEMINI + "/models/" + encodeURIComponent(model) + ":generateContent", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM }] },
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          maxOutputTokens: 4096,
+          responseMimeType: "application/json",
+          responseSchema: { type: "ARRAY", items: { type: "STRING" } }
+        }
+      })
+    });
+    if (res.status === 429 && attempt < RATE_LIMIT_BACKOFF.length){
+      const wait = RATE_LIMIT_BACKOFF[attempt];
+      log("   … rate limited (429), waiting " + wait + "s then retrying", "warn");
+      await sleep(wait * 1000);
+      continue;
+    }
+    if (!res.ok) throw new Error("API " + res.status + ": " + (await res.text()).slice(0, 300));
+    const data = await res.json();
+    const cand = (data.candidates || [])[0];
+    if (!cand) throw new Error("no candidate returned: " + JSON.stringify(data).slice(0, 300));
+    return ((cand.content && cand.content.parts) || []).map(p => p.text || "").join("");
+  }
 }
 
 // Model IDs change; ask the key which ones it can actually use rather than hardcoding.
@@ -381,9 +395,13 @@ async function go(){
   log("goal  " + goal, "hi");
   log("mode  " + mode + (model ? "  (" + model + ")" : "  (offline, deterministic)"));
 
+  if (mode === "live")
+    log("note  a full run is ~" + Math.ceil((TARGET_LEAVES - 1) / (MAX_CHILDREN - 1)) +
+        " requests; the free tier allows ~10/min, so expect a few minutes", "warn");
+
   const base = mode === "live" ? makeLiveExpander(key, model) : demoExpander;
   const expander = async (n, k, r) => {
-    if (mode === "demo") await sleep(320);            // pacing so the growth is watchable
+    if (mode === "demo") await sleep(90);             // pacing so the growth is watchable
     return base(n, k, r);
   };
 
@@ -427,6 +445,7 @@ els.export.addEventListener("click", () => {
   a.href = URL.createObjectURL(blob); a.download = "RESULT.json";
   a.click(); URL.revokeObjectURL(a.href);
 });
+$("target").textContent = TARGET_LEAVES;   // keep the label honest if the constants change
 stats(null); $("mLeaves").textContent = "1"; $("mNodes").textContent = "1";
 </script>
 </body>
