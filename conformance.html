@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live API conformance — run.py client</title>
+<style>
+  :root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232c;--line:#2a323d;--text:#e6edf3;
+    --muted:#8b949e;--accent:#7c9cff;--accent2:#f0883e;--ok:#3fb950;--err:#f85149}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 20px 80px}
+  h1{margin:0 0 4px;font-size:24px;letter-spacing:-.02em}
+  header p{margin:0 0 20px;color:var(--muted);font-size:14px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--muted);margin:0 0 5px}
+  input{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:8px;padding:9px 11px;font:inherit;font-size:14px}
+  input:focus{outline:none;border-color:var(--accent)}
+  .row{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+  button{background:var(--accent);color:#0b0f16;border:0;border-radius:8px;padding:9px 18px;
+    font:inherit;font-weight:650;cursor:pointer}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .safe{margin-left:auto;font-size:12px;color:var(--muted)}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+    margin:26px 0 10px}
+  .check{background:var(--panel);border:1px solid var(--line);border-left-width:3px;
+    border-radius:8px;padding:11px 13px;margin:8px 0}
+  .check.pass{border-left-color:var(--ok)} .check.fail{border-left-color:var(--err)}
+  .check.run{border-left-color:var(--accent2)}
+  .check .hd{display:flex;gap:9px;align-items:center}
+  .tag{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    padding:2px 8px;border-radius:20px;flex:0 0 auto}
+  .pass .tag{background:rgba(63,185,80,.16);color:var(--ok)}
+  .fail .tag{background:rgba(248,81,73,.16);color:var(--err)}
+  .run .tag{background:rgba(240,136,62,.16);color:var(--accent2)}
+  .name{flex:1 1 auto;font-weight:600}
+  .detail{margin-top:6px;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:var(--muted);white-space:pre-wrap;word-break:break-word}
+  .detail .bad{color:var(--err)}
+  footer{margin-top:28px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);
+    padding-top:14px}
+  code{background:var(--panel2);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Live API conformance</h1>
+    <p>Fires the <em>exact</em> request shapes <code>run.py</code> sends at the real Gemini API and
+       reports what came back. This validates assumptions the offline mock cannot: that the default
+       model id exists, that <code>responseSchema</code> is honoured, and that generated code needs
+       fence-stripping. <a href="./" style="color:var(--accent)">decomposer</a> ·
+       <a href="./viewer.html" style="color:var(--accent)">run viewer</a></p>
+  </header>
+
+  <div class="panel">
+    <label for="key">Gemini API key</label>
+    <input id="key" type="password" placeholder="AIza…" autocomplete="off">
+    <div class="row">
+      <button id="run">Run conformance checks</button>
+      <span class="safe">Key stays in this browser. Nothing here ever prints it.</span>
+    </div>
+  </div>
+
+  <h2>Results</h2>
+  <div id="out"></div>
+
+  <footer>
+    Sends 4 requests. <code>models.list</code>, then three <code>generateContent</code> calls
+    mirroring <code>plan_root</code>, <code>decompose</code>, and <code>write_code</code>.
+    Roughly 3 requests against your daily free-tier quota.
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const GEMINI = "https://generativelanguage.googleapis.com/v1beta";
+const ARTIFACT_TYPES = ["text", "json", "table", "blob", "number"];   // run.py §3
+const MIN_CHILDREN = 2, MAX_CHILDREN = 5;
+const RESULTS = [];
+
+$("key").value = localStorage.getItem("rsd_gemini_key") || "";
+$("key").addEventListener("input", () =>
+  localStorage.setItem("rsd_gemini_key", $("key").value.trim()));
+
+function card(name, state, detail){
+  const d = document.createElement("div");
+  d.className = "check " + state;
+  const hd = document.createElement("div"); hd.className = "hd";
+  const tag = document.createElement("span"); tag.className = "tag";
+  tag.textContent = state === "run" ? "…" : state;
+  const nm = document.createElement("span"); nm.className = "name"; nm.textContent = name;
+  hd.append(tag, nm); d.append(hd);
+  if (detail){
+    const p = document.createElement("div"); p.className = "detail"; p.textContent = detail;
+    d.append(p);
+  }
+  return d;
+}
+function report(name, ok, detail){
+  RESULTS.push({ name, ok, detail });
+  $("out").append(card(name, ok ? "pass" : "fail", detail));
+}
+
+// Mirrors GeminiModel._call in run.py: key in header, no systemInstruction, 4096 tokens.
+async function call(key, model, prompt, schema){
+  const body = { contents: [{ role: "user", parts: [{ text: prompt }] }],
+                 generationConfig: { maxOutputTokens: 4096 } };
+  if (schema){
+    body.generationConfig.responseMimeType = "application/json";
+    body.generationConfig.responseSchema = schema;
+  }
+  const res = await fetch(GEMINI + "/models/" + encodeURIComponent(model) + ":generateContent", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify(body)
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error("HTTP " + res.status + " — " + text.slice(0, 400));
+  const data = JSON.parse(text);
+  const cand = (data.candidates || [])[0];
+  if (!cand) throw new Error("no candidates — " + text.slice(0, 400));
+  return { text: ((cand.content && cand.content.parts) || []).map(p => p.text || "").join(""),
+           parts: ((cand.content && cand.content.parts) || []).length,
+           finish: cand.finishReason };
+}
+
+const ARTIFACT_LIST = { type: "ARRAY", items: { type: "OBJECT", properties: {
+  name: { type: "STRING" }, type: { type: "STRING" } }, required: ["name", "type"] } };
+
+async function main(){
+  $("run").disabled = true;
+  $("out").innerHTML = "";
+  RESULTS.length = 0;
+  const key = $("key").value.trim();
+  if (!key){ report("api key present", false, "paste your key first"); $("run").disabled = false; return; }
+
+  let model = "gemini-flash-latest";      // run.py's default
+
+  // 1 ── models.list, and does run.py's default model id actually exist?
+  const busy = card("models.list — is the default model id real?", "run", "");
+  $("out").append(busy);
+  try {
+    const r = await fetch(GEMINI + "/models?pageSize=200", { headers: { "x-goog-api-key": key } });
+    const raw = await r.text();
+    if (!r.ok) throw new Error("HTTP " + r.status + " — " + raw.slice(0, 400));
+    const ids = (JSON.parse(raw).models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+      .map(m => m.name.replace(/^models\//, ""));
+    const exists = ids.includes(model);
+    if (!exists) model = ids.find(i => /flash/.test(i) && !/lite/.test(i)) || ids[0];
+    busy.remove();
+    report("models.list — default id 'gemini-flash-latest' exists", exists,
+      (exists ? "present. " : "ABSENT — run.py would 404 on its default. falling back to " + model + ". ")
+      + ids.length + " generateContent models. sample: " + ids.slice(0, 8).join(", "));
+  } catch (e){
+    busy.remove();
+    report("models.list", false, String(e.message));
+    $("run").disabled = false;
+    return;
+  }
+
+  // 2 ── plan_root: responseSchema OBJECT
+  const b2 = card("plan_root — responseSchema OBJECT honoured", "run", ""); $("out").append(b2);
+  try {
+    const prompt =
+      "For this goal, list the input artifacts that must already exist, and EVERY distinct " +
+      "output artifact the goal asks for — one entry per output, do not bundle several " +
+      "results into one file.\nGoal: From input.txt, produce the word count, the character " +
+      "count, and the five most common words, as three separate artifacts.\n" +
+      'Available input files: ["input.txt"]\n' +
+      "Artifact types must be one of " + JSON.stringify(ARTIFACT_TYPES) +
+      ". Use lowercase filenames with extensions.\n";
+    const schema = { type: "OBJECT", properties: { requires: ARTIFACT_LIST, produces: ARTIFACT_LIST },
+                     required: ["requires", "produces"] };
+    const r = await call(key, model, prompt, schema);
+    let d = null, err = "";
+    try { d = JSON.parse(r.text); } catch (e){ err = "response was not JSON: " + r.text.slice(0, 200); }
+    const okShape = d && Array.isArray(d.requires) && Array.isArray(d.produces) && d.produces.length > 0;
+    const badTypes = okShape ? d.produces.concat(d.requires)
+      .filter(x => !ARTIFACT_TYPES.includes(x.type)).map(x => x.name + ":" + x.type) : [];
+    const multi = okShape && d.produces.length > 1;
+    b2.remove();
+    report("plan_root — responseSchema OBJECT honoured", !!okShape && !badTypes.length,
+      err || ("produces " + d.produces.length + " artifact(s): " +
+        d.produces.map(p => p.name + ":" + p.type).join(", ") +
+        "\nrequires: " + d.requires.map(p => p.name + ":" + p.type).join(", ") +
+        (badTypes.length ? "\nTYPES OUTSIDE §3: " + badTypes.join(", ") : "") +
+        (multi ? "\nmulti-artifact root -> §5 step 3 would decompose. good."
+               : "\nONLY ONE ARTIFACT -> would be a degenerate 1-node run.") +
+        "\nfinishReason " + r.finish + ", parts " + r.parts));
+  } catch (e){ b2.remove(); report("plan_root", false, String(e.message)); }
+
+  // 3 ── decompose: responseSchema ARRAY
+  const b3 = card("decompose — responseSchema ARRAY honoured", "run", ""); $("out").append(b3);
+  try {
+    const prompt =
+      "Break this task into " + MIN_CHILDREN + "-" + MAX_CHILDREN +
+      " sub-tasks, each producing EXACTLY ONE artifact.\n" +
+      "Task: From input.txt, produce the word count, the character count, and the five most " +
+      "common words, as three separate artifacts.\n" +
+      'Available inputs: [{"name":"input.txt","type":"text"}]\n' +
+      'The sub-tasks together must produce: [{"name":"words.json","type":"json"},' +
+      '{"name":"chars.json","type":"json"},{"name":"top5.json","type":"json"}]\n' +
+      "Sub-tasks run in the order you list them; a sub-task may only require an artifact " +
+      "an earlier sub-task produces, or one of the available inputs.\n" +
+      "Artifact types must be one of " + JSON.stringify(ARTIFACT_TYPES) + ".\n";
+    const schema = { type: "ARRAY", items: { type: "OBJECT", properties: {
+      instruction: { type: "STRING" }, requires: ARTIFACT_LIST, produces: ARTIFACT_LIST },
+      required: ["instruction", "requires", "produces"] } };
+    const r = await call(key, model, prompt, schema);
+    let kids = null, err = "";
+    try { kids = JSON.parse(r.text); } catch (e){ err = "not JSON: " + r.text.slice(0, 200); }
+    const isArr = Array.isArray(kids);
+    const inRange = isArr && kids.length >= MIN_CHILDREN && kids.length <= MAX_CHILDREN;
+    const oneEach = isArr && kids.every(k => (k.produces || []).length === 1);
+    const shaped = isArr && kids.every(k => k.instruction && Array.isArray(k.requires));
+    b3.remove();
+    report("decompose — responseSchema ARRAY honoured", !!(inRange && oneEach && shaped),
+      err || (kids.length + " children (" + MIN_CHILDREN + "-" + MAX_CHILDREN + " wanted)" +
+        "\neach produces exactly one artifact: " + oneEach +
+        "\n" + kids.map(k => "  · " + (k.produces || []).map(p => p.name).join(",") +
+                             "  <- " + String(k.instruction).slice(0, 60)).join("\n") +
+        "\nfinishReason " + r.finish));
+  } catch (e){ b3.remove(); report("decompose", false, String(e.message)); }
+
+  // 4 ── write_code: plain text, does it come back fenced?
+  const b4 = card("write_code — is fence-stripping needed?", "run", ""); $("out").append(b4);
+  try {
+    const prompt =
+      "Write ONE self-contained Python 3 block.\n" +
+      "Task: count the words in input.txt and write the count\n" +
+      'Read these artifacts from artifacts/: [{"name":"input.txt","type":"text"}]\n' +
+      'Write EXACTLY this artifact to artifacts/: [{"name":"words.json","type":"json"}]\n' +
+      "No network. No input(). Reply with only code, no fences.\n";
+    const r = await call(key, model, prompt, null);
+    const fenced = /^```/m.test(r.text.trim());
+    const stripped = r.text.trim().replace(/^```(?:python)?|```$/gm, "").trim();
+    const looksPy = /open\s*\(|import\s+/.test(stripped);
+    b4.remove();
+    report("write_code — returns runnable-looking Python", looksPy,
+      "came back fenced despite being told not to: " + fenced +
+      (fenced ? "  (run.py strips fences, so this is handled)" : "") +
+      "\nfinishReason " + r.finish + ", " + stripped.length + " chars\n---\n" +
+      stripped.slice(0, 400));
+  } catch (e){ b4.remove(); report("write_code", false, String(e.message)); }
+
+  const passed = RESULTS.filter(r => r.ok).length;
+  $("out").append(card(passed + " / " + RESULTS.length + " checks passed  (model: " + model + ")",
+                       passed === RESULTS.length ? "pass" : "fail", ""));
+  window.CONFORMANCE = { model, passed, total: RESULTS.length, results: RESULTS };
+  $("run").disabled = false;
+}
+$("run").addEventListener("click", main);
+</script>
+</body>
+</html>
